@@ -9,6 +9,10 @@
 <!-- Marketing origin (www.browserid.me) config: where the auth/issuer broker lives.
      Deploy overrides authOrigin; defaults to production. See marketing/config.js. -->
 <script src="/config.js"></script>
+<!-- Analytics: self-hosted, locked-down PostHog. Marketing origin only — this
+     origin has no keystore/cookies/wsapi. Ingestion is reverse-proxied via /ingest. -->
+<script src="/vendor/posthog.js"></script>
+<script src="/analytics.js" defer></script>
 <style>:root { color-scheme: light dark; }</style>
 <style>
   :root {
