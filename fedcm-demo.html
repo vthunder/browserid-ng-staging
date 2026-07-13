@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>browserid — FedCM demo RP</title>
+<!-- Force the FedCM fast path ON for this page (it's opt-in in include.js). -->
+<script>window.__browseridEnableFedCM = true;</script>
+<style>
+  body { font: 15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; max-width: 40rem; margin: 2.5rem auto; padding: 0 1.25rem; color: #111; }
+  @media (prefers-color-scheme: dark) { body { background:#0b0f1a; color:#e8ecf5; } pre,.card{background:#131a2b !important;border-color:#26304a !important;} }
+  h1 { font-family: ui-monospace, monospace; font-size: 1.4rem; }
+  button { font: inherit; font-weight: 600; padding: .6rem 1.1rem; border-radius: 8px; border: 1px solid #c7cede; background: #2E7D96; color: #fff; cursor: pointer; }
+  button.alt { background: transparent; color: inherit; }
+  .card { background:#f2f4f9; border:1px solid #dce1ec; border-radius:10px; padding:1rem 1.2rem; margin:1.2rem 0; }
+  pre { background:#f2f4f9; border:1px solid #dce1ec; border-radius:8px; padding:.7rem .9rem; overflow-x:auto; font-size:.8rem; white-space:pre-wrap; word-break:break-all; }
+  .row { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; margin:.8rem 0; }
+  .k { font-family: ui-monospace, monospace; font-size:.8rem; }
+  .ok { color:#2f7d53; } .bad { color:#b23; } .muted { color:#667; }
+  #log div { padding:.15rem 0; border-top:1px solid rgba(128,128,128,.15); font-size:.85rem; }
+  code { font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<h1>FedCM demo RP</h1>
+<p class="muted">A minimal relying party that loads <code>include.js</code> from browserid.me and signs in via
+<code>navigator.id.request()</code>. FedCM is force-enabled here, so on a supporting browser it should show the
+native account chooser instead of the popup.</p>
+
+<div class="card">
+  <div class="k">Environment</div>
+  <div class="row"><span class="k">FedCM supported (IdentityCredential):</span> <span id="supported" class="k">…</span></div>
+  <div class="k muted">RP origin (the assertion audience): <span id="rporigin"></span></div>
+</div>
+
+<p><strong>Before you click:</strong> sign into <a href="https://browserid.me/account" target="_blank" rel="noopener">browserid.me/account</a>
+first, with an account that has an <strong>SMTP-verified (Secondary) email</strong> — that's what FedCM surfaces.</p>
+
+<div class="row">
+  <button id="signin">Sign in (popup)</button>
+  <button id="grant" class="alt">Establish FedCM grant (one-time chooser)</button>
+  <button id="signout" class="alt">Reset</button>
+</div>
+<p class="muted tiny" style="font-size:.8rem">On load this page attempts a <strong>silent</strong> FedCM login (no UI) — that only works once a grant exists.
+<strong>To create the grant the intended way:</strong> click <strong>"Sign in (popup)"</strong>, and in the browserid dialog
+tick <em>"Automatically sign in to this site next time"</em> before signing in. The dialog closes, then the FedCM chooser
+appears (click Continue) — that banks the grant. Reload and you'll be logged in silently. (The middle button is the
+manual way to bank the grant; the normal dialog no longer uses FedCM on click.)</p>
+
+<div class="card">
+  <div class="k">Status</div>
+  <div id="log"></div>
+</div>
+
+<div class="card" id="result-card" style="display:none">
+  <div class="k">/verify result (audience = this page's origin)</div>
+  <pre id="result"></pre>
+</div>
+
+<script src="https://browserid.me/include.js"></script>
+<script>
+(function () {
+  var BROKER = "https://browserid.me";
+  var logEl = document.getElementById("log");
+  function log(msg, cls) {
+    var d = document.createElement("div");
+    d.textContent = "[" + new Date().toLocaleTimeString() + "] " + msg;
+    if (cls) d.className = cls;
+    logEl.appendChild(d);
+  }
+
+  document.getElementById("rporigin").textContent = location.origin;
+  var supported = ("IdentityCredential" in window);
+  var supEl = document.getElementById("supported");
+  supEl.textContent = supported ? "yes" : "NO (will use popup)";
+  supEl.className = "k " + (supported ? "ok" : "bad");
+
+  if (!navigator.id || !navigator.id.watch) {
+    log("include.js failed to load from browserid.me", "bad");
+    return;
+  }
+
+  log("page load → attempting SILENT FedCM auto-login (no UI)…", "muted");
+  // A real RP keeps its OWN session (cookie/localStorage) after the first login,
+  // so reloads don't re-invoke FedCM — which also sidesteps FedCM's auto-reauthn
+  // cooldown. We simulate that here with localStorage.
+  var RP_SESSION = "demo_rp_session";
+  function rpSession() { try { return localStorage.getItem(RP_SESSION); } catch (e) { return null; } }
+  function setRpSession(v) { try { v ? localStorage.setItem(RP_SESSION, v) : localStorage.removeItem(RP_SESSION); } catch (e) {} }
+
+  if (rpSession()) {
+    log("Signed in as " + rpSession() + " — via the RP's own session (no FedCM needed on reload).", "ok");
+  } else {
+    log("No RP session yet → silent FedCM will try to bootstrap one.", "muted");
+  }
+
+  navigator.id.watch({
+    loggedInUser: null,
+    onready: function () { log("navigator.id ready.", "muted"); },
+    onlogin: function (assertion) {
+      log("onlogin — got an assertion (" + assertion.length + " chars). Verifying…", "ok");
+      verify(assertion);
+    },
+    onlogout: function () { log("onlogout (no silent session)", "muted"); }
+  });
+
+  document.getElementById("signin").addEventListener("click", function () {
+    log("request() → popup dialog (not FedCM)…");
+    navigator.id.request();
+  });
+
+  // One-time consent: an interactive FedCM chooser establishes the grant that
+  // makes future silent auto-logins possible. Uses mediation:'required'.
+  document.getElementById("grant").addEventListener("click", function () {
+    if (!("IdentityCredential" in window)) { log("FedCM not supported in this browser", "bad"); return; }
+    log("Opening FedCM chooser to establish the grant…");
+    navigator.credentials.get({
+      mediation: "required",
+      identity: { providers: [{ configURL: BROKER + "/fedcm/config.json", clientId: location.origin, nonce: String(Date.now()) }] }
+    }).then(function (cred) {
+      if (cred && cred.token) {
+        try { localStorage.setItem("browserid_fedcm_autologin", "1"); } catch (e) {}
+        log("grant established — token received. Reload to see silent login.", "ok"); verify(cred.token);
+      } else log("chooser returned no token", "bad");
+    }).catch(function (e) { log("FedCM chooser failed: " + (e && e.message), "bad"); });
+  });
+  document.getElementById("signout").addEventListener("click", function () {
+    navigator.id.logout();       // clears FedCM opt-in flag + server consent (/fedcm/reset)
+    setRpSession(null);          // drop the RP's own session too
+    document.getElementById("result-card").style.display = "none";
+    log("logout() — RP session + FedCM auto-login both cleared.", "muted");
+  });
+
+  function verify(assertion) {
+    fetch(BROKER + "/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        assertion: assertion,
+        audience: location.origin,
+        accepted_fallbacks: ["browserid.me"]
+      })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (v) {
+        document.getElementById("result-card").style.display = "block";
+        document.getElementById("result").textContent = JSON.stringify(v, null, 2);
+        if (v.status === "okay") setRpSession(v.email); // establish the RP's own session
+        log(v.status === "okay" ? "verified: " + v.email + " (RP session set)" : "verify failed: " + (v.reason || "?"),
+            v.status === "okay" ? "ok" : "bad");
+      })
+      .catch(function (e) { log("verify request error: " + e.message, "bad"); });
+  }
+})();
+</script>
+</body>
+</html>
