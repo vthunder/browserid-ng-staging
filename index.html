@@ -112,7 +112,8 @@
     padding: 5px 12px; cursor: pointer;
   }
   .theme-btn:hover { color: var(--text); border-color: var(--line-strong); }
-  @media (max-width: 720px) { .topnav a:not(.theme-btn) { display: none; } }
+  /* On narrow screens drop the section anchors but keep the Sign-in CTA. */
+  @media (max-width: 720px) { .topnav a:not(.nav-signin) { display: none; } .topnav { gap: 14px; } }
 
   /* ---------- hero ---------- */
   .hero .wrap { display: grid; grid-template-columns: 1.05fr .95fr; gap: 56px; align-items: center; padding-top: 74px; padding-bottom: 78px; }
@@ -313,6 +314,32 @@
     .feat.rev .feat-art { order: 0; }
     .prob-grid, .pillars, .start-grid { grid-template-columns: 1fr; }
     .hero .wrap { padding-top: 48px; padding-bottom: 52px; }
+    /* Let grid/flex children shrink to the column so wide content (code blocks,
+       long mono tokens) scrolls inside its own box instead of stretching the
+       page — the default min-width:auto is what causes the sideways scroll. */
+    .hero .wrap > *, .feat .wrap > * { min-width: 0; }
+    section.band .wrap { padding: 54px 24px; }
+  }
+
+  /* ---------- phones ---------- */
+  @media (max-width: 560px) {
+    body { font-size: 16px; }
+    .wrap { padding: 0 18px; }
+    .topbar .wrap { height: 56px; }
+    .brand { font-size: 15px; }
+    section.band .wrap { padding: 44px 18px; }
+    .hero .wrap { padding-top: 40px; padding-bottom: 44px; }
+    .hero h1 { font-size: clamp(26px, 8.5vw, 40px); }
+    .hero-sub { font-size: 16.5px; }
+    .lede { font-size: 18px; }
+    .cred, .consent, .signin { padding: 18px; }
+    .code pre { padding: 15px 14px; font-size: 12px; }
+    .code-bar { padding: 10px 13px; }
+    .prob { padding-left: 14px; }
+    .startcard { padding: 20px; }
+    footer .wrap { padding: 24px 18px; }
+    /* long identifiers/emails in body copy wrap instead of overflowing */
+    p, li, .consent-v, .agent-row { overflow-wrap: anywhere; }
   }
 </style>
 </head>
@@ -326,7 +353,7 @@
       <a href="#people">For people</a>
       <a href="#why">Why</a>
       <a href="#start">Get started</a>
-      <a href="/account" data-auth-href="/account" style="color: var(--accent); font-weight: 600;">Sign in</a>
+      <a href="/account" data-auth-href="/account" class="nav-signin" style="color: var(--accent); font-weight: 600;">Sign in</a>
       <button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle color theme">theme</button>
     </nav>
   </div>
