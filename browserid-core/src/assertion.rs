@@ -133,10 +133,17 @@ impl Assertion {
 }
 
 /// Agent attribution surfaced by a verified agent presentation (spec §5.3
-/// step 5): who the agent acts for, and the scopes its delegator granted at
-/// this audience.
+/// step 5, self-derivation design §3.5/E.1): who the agent **acts as**, who
+/// delegated to it, and the scopes its delegator granted at this audience.
+///
+/// `acts_as` and `scopes` travel together and are non-optional, so a caller
+/// cannot reduce an agent presentation to a bare principal string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentAttribution {
+    /// The verified principal this presentation acts as — the leaf agent
+    /// certificate's principal (for a self-derived agent-as-self cert this is
+    /// the base identity itself).
+    pub acts_as: String,
     /// The delegator (`agent.parent` from the certificate, cross-checked
     /// against the warrant)
     pub parent: String,
@@ -144,14 +151,47 @@ pub struct AgentAttribution {
     pub scopes: Vec<String>,
 }
 
-/// What a verified backed assertion yields: the certified email, plus agent
-/// attribution when the presentation is an agent's.
+/// What a verified backed assertion yields (self-derivation design decision
+/// E.1 — the strongest naive-RP mitigation). This is deliberately an **enum**,
+/// not a struct with an easily-dropped `Option`: a caller must match the
+/// [`VerifiedPresentation::Agent`] arm to obtain the email, so an agent
+/// presentation can never be silently mistaken for a full-authority identity.
 #[derive(Debug, Clone)]
-pub struct VerifiedPresentation {
-    pub email: String,
-    /// `Some` iff the leaf certificate is an agent certificate — in which
-    /// case a warrant for the verifying audience was present and verified
-    pub agent: Option<AgentAttribution>,
+pub enum VerifiedPresentation {
+    /// A plain identity (or login) presentation: full authority as `email`.
+    Identity {
+        /// The certified email.
+        email: String,
+    },
+    /// An agent presentation: authority is warrant-defined. Carries the
+    /// non-optional [`AgentAttribution`] (`acts_as` + `parent` + `scopes`).
+    Agent(AgentAttribution),
+}
+
+impl VerifiedPresentation {
+    /// The verified principal email, whichever variant this is. For an agent
+    /// presentation this is who it **acts as** — reading it does not discard
+    /// the fact that the presentation is an agent's (use [`Self::agent`] /
+    /// [`Self::is_agent`] to observe that).
+    pub fn email(&self) -> &str {
+        match self {
+            Self::Identity { email } => email,
+            Self::Agent(a) => &a.acts_as,
+        }
+    }
+
+    /// The agent attribution, present iff this is an agent presentation.
+    pub fn agent(&self) -> Option<&AgentAttribution> {
+        match self {
+            Self::Agent(a) => Some(a),
+            Self::Identity { .. } => None,
+        }
+    }
+
+    /// Whether this is an agent presentation.
+    pub fn is_agent(&self) -> bool {
+        matches!(self, Self::Agent(_))
+    }
 }
 
 /// A backed identity assertion: certificate chain + assertion
@@ -255,13 +295,29 @@ impl BackedAssertion {
             .certificates
             .iter()
             .take(self.certificates.len() - 1)
-            .any(|c| c.is_agent())
+            .any(|c| c.is_any_agent())
         {
             return Err(Error::InvalidAssertion(
                 "an agent certificate must be the leaf of the chain".into(),
             ));
         }
-        match (leaf.is_agent(), &self.warrant) {
+        // A self-derived agent leaf is preceded by exactly one plain base cert
+        // (self-derivation design §2.2 / §7): `[base, self_agent]`.
+        if leaf.is_self_agent() {
+            if self.certificates.len() != 2 {
+                return Err(Error::InvalidAssertion(
+                    "a self-derived agent presentation must carry exactly one base certificate"
+                        .into(),
+                ));
+            }
+            if self.certificates[0].is_any_agent() {
+                return Err(Error::InvalidAssertion(
+                    "the base of a self-derived presentation must be a plain identity certificate"
+                        .into(),
+                ));
+            }
+        }
+        match (leaf.is_any_agent(), &self.warrant) {
             (true, None) => Err(Error::WarrantRequired),
             (false, Some(_)) => Err(Error::InvalidAssertion(
                 "warrant present but the leaf certificate is not an agent certificate".into(),
@@ -321,6 +377,44 @@ impl BackedAssertion {
             return Err(Error::CertificateExpired);
         }
 
+        // Self-derived agent presentation (`[base, self_agent]~warrant~assertion`,
+        // self-derivation design §2.3). This chain does NOT reduce to the classic
+        // domain-signed path — the leaf `iss` is the base identity, not the domain
+        // — so it is verified through the shared checklist and returns early.
+        if user_cert.is_self_agent() {
+            // check_structure guarantees exactly `[base, self_agent]`.
+            let base = &self.certificates[0];
+            let base_domain = base.claims().principal.domain().ok_or_else(|| {
+                Error::InvalidCertificate("base cert email has no domain".into())
+            })?;
+            let domain_key = get_domain_key(base_domain)?;
+            crate::certificate::verify_self_derived_chain(
+                base,
+                user_cert,
+                &domain_key,
+                Utc::now(),
+            )?;
+
+            // The warrant is load-bearing and mandatory (WarrantRequired), and is
+            // verified with the BASE cert as its parent-cert under the domain key.
+            let warrant = self.warrant.as_ref().ok_or(Error::WarrantRequired)?;
+            let scopes = warrant.verify_for(user_cert, expected_audience, &domain_key)?;
+
+            let acts_as = user_cert
+                .email()
+                .ok_or_else(|| Error::InvalidCertificate("certificate has no email".into()))?
+                .to_string();
+            let parent = user_cert
+                .agent_parent()
+                .expect("check_structure: self-agent leaf has an agent block")
+                .to_string();
+            return Ok(VerifiedPresentation::Agent(AgentAttribution {
+                acts_as,
+                parent,
+                scopes,
+            }));
+        }
+
         // Get the email and domain from the certificate
         let email = user_cert
             .email()
@@ -373,22 +467,23 @@ impl BackedAssertion {
         // Agent presentation: the warrant is load-bearing (spec §5.3). The
         // delegator's embedded parent cert chains to the same issuer key —
         // delegator and agent share one IdP (identity-domain rule).
-        let agent = match &self.warrant {
+        match &self.warrant {
             Some(warrant) => {
                 let scopes = warrant.verify_for(user_cert, expected_audience, &issuer_key)?;
                 let parent = user_cert
                     .agent_parent()
                     .expect("check_structure: warrant implies agent cert")
                     .to_string();
-                Some(AgentAttribution { parent, scopes })
+                Ok(VerifiedPresentation::Agent(AgentAttribution {
+                    acts_as: email.to_string(),
+                    parent,
+                    scopes,
+                }))
             }
-            None => None,
-        };
-
-        Ok(VerifiedPresentation {
-            email: email.to_string(),
-            agent,
-        })
+            None => Ok(VerifiedPresentation::Identity {
+                email: email.to_string(),
+            }),
+        }
     }
 
     /// Get the certificates in the chain
@@ -457,8 +552,8 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(verified.email, "alice@example.com");
-        assert!(verified.agent.is_none());
+        assert_eq!(verified.email(), "alice@example.com");
+        assert!(!verified.is_agent());
     }
 
     #[test]
@@ -493,7 +588,7 @@ mod tests {
             .verify("https://relying-party.com", |_| Ok(domain_key.public_key()))
             .unwrap();
 
-        assert_eq!(verified.email, "alice@example.com");
+        assert_eq!(verified.email(), "alice@example.com");
     }
 
     // ---- agent presentations (spec §5.3) ----
@@ -566,8 +661,9 @@ mod tests {
         let verified = parsed
             .verify(RP, |_| Ok(s.domain_key.public_key()))
             .unwrap();
-        assert_eq!(verified.email, "researcher@example.com");
-        let agent = verified.agent.expect("agent attribution");
+        assert_eq!(verified.email(), "researcher@example.com");
+        let agent = verified.agent().expect("agent attribution");
+        assert_eq!(agent.acts_as, "researcher@example.com");
         assert_eq!(agent.parent, "alice@example.com");
         assert_eq!(agent.scopes, vec!["post"]);
     }

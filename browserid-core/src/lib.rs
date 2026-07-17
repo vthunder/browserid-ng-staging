@@ -17,7 +17,10 @@ pub mod status;
 pub mod warrant;
 
 pub use keys::{KeyPair, PublicKey};
-pub use certificate::{AgentClaims, Certificate, TYP_AGENT_CERT};
+pub use certificate::{
+    derived_name_matches, parse_subaddress, split_email, verify_self_derived_chain, AgentClaims,
+    Authority, Certificate, TYP_AGENT_CERT, TYP_SELF_AGENT_CERT,
+};
 pub use assertion::{AgentAttribution, Assertion, BackedAssertion, VerifiedPresentation};
 pub use dns::{DnsRecord, DnssecStatus, DnsLookupResult};
 pub use error::Error;

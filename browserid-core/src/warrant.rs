@@ -186,7 +186,22 @@ impl Warrant {
         if parent.is_agent() {
             return Err(invalid("an agent identity cannot be a delegator"));
         }
-        if parent.issuer() != agent_cert.issuer() {
+        // Issuer match. For a domain-issued agent cert, parent and agent share
+        // the same domain issuer. For a **self-derived** agent cert the leaf is
+        // self-issued (decision D): its `iss` is the base identity, which is the
+        // delegator == this parent cert's principal.
+        if agent_cert.is_self_agent() {
+            let parent_email = parent
+                .email()
+                .ok_or_else(|| invalid("parent cert has no email principal"))?;
+            if agent_cert.issuer() != parent_email {
+                return Err(invalid(format!(
+                    "self-derived agent issuer '{}' does not match delegator '{}'",
+                    agent_cert.issuer(),
+                    parent_email
+                )));
+            }
+        } else if parent.issuer() != agent_cert.issuer() {
             return Err(invalid(format!(
                 "parent cert issuer '{}' does not match agent cert issuer '{}'",
                 parent.issuer(),
@@ -251,27 +266,35 @@ impl Warrant {
             });
         }
 
-        // 6. Revocation authority (agent spec §5.3, strict). An agent warrant
-        //    MUST carry a status ref, the agent cert MUST name a registrar,
-        //    and the ref's origin MUST be that registrar — so revocation is
-        //    pinned to the authority the delegator's identity committed to,
+        // 6. Revocation authority. A **self-derived** agent cert (self-derivation
+        //    design §6.2 / decision G) has no `registrar` to pin to: the verifier
+        //    follows whatever `status` endpoint the cert names, with NO pinning.
+        //    In phase 1 a named status endpoint is fail-open — phase-1 revocation
+        //    is chain expiry (§6.1) — so no status ref is required here.
+        //
+        //    A domain-issued agent cert keeps the strict pin (agent spec §5.3):
+        //    the warrant MUST carry a status ref, the agent cert MUST name a
+        //    registrar, and the ref's origin MUST be that registrar — so
+        //    revocation is pinned to the authority the delegator committed to,
         //    never one the warrant names freely.
-        let status = self
-            .claims
-            .status
-            .as_ref()
-            .ok_or_else(|| invalid("agent warrant carries no status ref (spec §5.2)"))?;
-        let registrar = agent_cert
-            .registrar()
-            .ok_or_else(|| invalid("agent cert names no registrar (spec §5.1)"))?;
-        let reg_origin = url_origin(registrar)
-            .ok_or_else(|| invalid("agent cert registrar is not a valid origin"))?;
-        let status_origin = url_origin(&status.uri)
-            .ok_or_else(|| invalid("warrant status.uri is not a valid origin"))?;
-        if status_origin != reg_origin {
-            return Err(invalid(format!(
-                "warrant status authority '{status_origin}' is not the certificate's registrar '{reg_origin}'"
-            )));
+        if !agent_cert.is_self_agent() {
+            let status = self
+                .claims
+                .status
+                .as_ref()
+                .ok_or_else(|| invalid("agent warrant carries no status ref (spec §5.2)"))?;
+            let registrar = agent_cert
+                .registrar()
+                .ok_or_else(|| invalid("agent cert names no registrar (spec §5.1)"))?;
+            let reg_origin = url_origin(registrar)
+                .ok_or_else(|| invalid("agent cert registrar is not a valid origin"))?;
+            let status_origin = url_origin(&status.uri)
+                .ok_or_else(|| invalid("warrant status.uri is not a valid origin"))?;
+            if status_origin != reg_origin {
+                return Err(invalid(format!(
+                    "warrant status authority '{status_origin}' is not the certificate's registrar '{reg_origin}'"
+                )));
+            }
         }
 
         Ok(self.claims.scopes.clone().unwrap_or_default())

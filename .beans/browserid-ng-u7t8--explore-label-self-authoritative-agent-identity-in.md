@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: high
 created_at: 2026-07-17T14:30:49Z
-updated_at: 2026-07-17T19:10:53Z
+updated_at: 2026-07-17T19:17:02Z
 parent: browserid-ng-mr2n
 ---
 
@@ -80,3 +80,8 @@ Only OQ-onchain (SBO on-chain revocation object = new design) remains open. Doc 
 ## OQ-1 refinement (2026-07-17, dan): offline-CAPABLE by design, online-IN-PRACTICE
 
 browserid.me knows about the derived cert REGARDLESS - the per-agent revoke UI lives on browserid.me/account, and you can't list/revoke a cert the server never heard of. So the offline property is about ROBUSTNESS (validity/revocability never DEPEND on a server round-trip; the idx is self-derivable, not server-allocated), not about never calling the server. In practice the client TELLS browserid.me about the derived cert at derivation time so it appears in the /account list + revoke UI - a best-effort/UI concern, not a required allocation step. Self-derivable hashed-idx design unchanged; still deferred to phase 2 (phase 1 uses chain revocation). §6.2.1 + OQ-1 resolution reworded.
+
+
+## OQ-3 UX pain RESOLVED (phase-2): same-key re-stamping (bean browserid-ng-s5xa)
+
+The ~24h re-issue churn is fixable. The per-refresh key rotation is VESTIGIAL (classic-Persona carryover), not a security choice - no forward-secrecy rationale in code/history; the only documented key rationale is non-extractable custody (e2fi = storage, not rotation). CORRECTION to the OQ-3 framing: "keys rotate" is only a browser-DIALOG convention, NOT a system invariant - the Rust browserid-agent ALREADY keeps a stable key and re-mints (lib.rs:498-511), and nothing keys on key fingerprint (status per-identity-email, replay aud+exp bounded, cert cache per (issuer,email)). Fix is client-only (dialog.js reuse-if-present + present stored pubkey in the primary genKeyPair path); broker certifies whatever pubkey it's given (no broker change); works for classic primaries; safe given e2fi. Phase-2, opt-in/scoped -> global. Phase-1 stays bounded/re-issue-on-refresh; re-stamping makes long-lived derived agents pleasant. Tracked in browserid-ng-s5xa; doc section 5.1.1.

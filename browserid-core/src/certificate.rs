@@ -15,6 +15,34 @@ use crate::{Error, KeyPair, PublicKey, Result};
 /// what makes agent credentials fail-closed at verifiers that predate them.
 pub const TYP_AGENT_CERT: &str = "browserid-agent-cert-v1";
 
+/// Claim-level `typ` of a **self-derived agent certificate** (self-derivation
+/// design §3.1). A base identity `user@domain` — holding its domain-signed base
+/// cert and matching key — self-signs this cert with its own identity key
+/// rather than the domain key. The distinct `typ` makes a verifier select the
+/// constrained self-derivation path, and makes verifiers that predate this
+/// feature **fail closed** (the [`Certificate::parse`] matcher rejects any
+/// `typ` it does not recognize).
+pub const TYP_SELF_AGENT_CERT: &str = "browserid-self-agent-cert-v1";
+
+/// The universal `authority` claim carried by every certificate
+/// (self-derivation design §3.2 / decision E.2). It answers **what the cert
+/// grants**, explicitly and on every cert type — never inferred from `typ`:
+///
+/// - [`Authority::Open`] — identity / login certs (base identity, plain user,
+///   regular subaddress): full authority **as the principal**.
+/// - [`Authority::Closed`] — agent certs: authority is **warrant-defined**; an
+///   RP SHOULD consult the accompanying warrant's scopes, not the principal
+///   alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Authority {
+    /// Full authority as the principal (identity / login certs).
+    #[serde(rename = "open")]
+    Open,
+    /// Warrant-defined authority (agent certs).
+    #[serde(rename = "closed")]
+    Closed,
+}
+
 /// The `agent` claims block on an agent certificate: issuer-set attribution.
 /// Presence of this block (with [`TYP_AGENT_CERT`]) is what makes an identity
 /// protocol-visible as an agent. The agent's handle is the local part of the
@@ -80,9 +108,18 @@ pub struct CertificateClaims {
     /// The principal (email address)
     pub principal: Principal,
 
-    /// Agent attribution block — present iff `typ` is [`TYP_AGENT_CERT`]
+    /// Agent attribution block — present iff `typ` is [`TYP_AGENT_CERT`] or
+    /// [`TYP_SELF_AGENT_CERT`]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentClaims>,
+
+    /// Universal authority declaration (self-derivation design §3.2). Set by
+    /// every constructor: identity/base = [`Authority::Open`], agent =
+    /// [`Authority::Closed`]. `None` only on certificates minted before this
+    /// field existed (parsed for backward compatibility); the self-derivation
+    /// verifier requires it to be present and `closed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authority: Option<Authority>,
 
     /// Agent spec §5.1: the origin of the registrar the delegator's broker
     /// chose — where the agent raises consent requests and where its warrant
@@ -148,6 +185,7 @@ impl Certificate {
             public_key: user_public_key.clone(),
             principal: Principal::email(email),
             agent: None,
+            authority: Some(Authority::Open),
             registrar: None,
             status,
         };
@@ -197,6 +235,7 @@ impl Certificate {
             agent: Some(AgentClaims {
                 parent: parent.to_string(),
             }),
+            authority: Some(Authority::Closed),
             registrar,
             status,
         };
@@ -206,9 +245,95 @@ impl Certificate {
         Ok(Self { encoded, claims })
     }
 
+    /// Create and sign a **self-derived agent certificate** (self-derivation
+    /// design §3.4, phase-1 agent-as-self case). The base identity `user@domain`
+    /// — holding its domain-signed `base_cert` and matching `base_key` —
+    /// self-signs an agent cert whose principal **equals** the base principal.
+    ///
+    /// Unlike [`Certificate::create_agent`], this is signed by the **base
+    /// identity key**, not the domain key: `iss` is the base identity's email
+    /// (decision D, self-issuance), `typ` is [`TYP_SELF_AGENT_CERT`],
+    /// `authority` is [`Authority::Closed`], `agent.parent` is the base identity,
+    /// and a `status` ref is mandatory (§3.3).
+    ///
+    /// The derived validity is bound to the base cert's: `exp` is the earlier of
+    /// `now + validity` and the base cert's `exp` (decision OQ-3 — a self-derived
+    /// agent cert can never outlive the short-lived base cert it chains to).
+    pub fn create_self_derived_agent(
+        base_cert: &Certificate,
+        agent_public_key: &PublicKey,
+        base_key: &KeyPair,
+        validity: Duration,
+        status: StatusRef,
+    ) -> Result<Self> {
+        let base_email = base_cert
+            .email()
+            .ok_or_else(|| Error::InvalidCertificate("base cert has no email principal".into()))?;
+
+        // The base must itself be a plain identity cert — an agent cert cannot be
+        // a self-derivation base (it has no full authority to delegate).
+        if base_cert.is_any_agent() {
+            return Err(Error::InvalidCertificate(
+                "self-derivation base must be a plain identity certificate".into(),
+            ));
+        }
+
+        // Phase-1 agent-as-self: the derived principal equals the base principal.
+        // The name-constraint check is written for the general form (also
+        // accepting `base+label@domain`) so phase 2 can reuse it unchanged.
+        let derived_email = base_email.to_string();
+        if !derived_name_matches(base_email, &derived_email) {
+            return Err(Error::InvalidCertificate(
+                "self-derived principal violates the name constraint".into(),
+            ));
+        }
+
+        let now = Utc::now();
+        // Bind the derived validity to the base cert (OQ-3).
+        let exp = (now + validity).timestamp().min(base_cert.claims().exp);
+
+        let claims = CertificateClaims {
+            typ: Some(TYP_SELF_AGENT_CERT.to_string()),
+            iss: base_email.to_string(),
+            exp,
+            iat: Some(now.timestamp()),
+            public_key: agent_public_key.clone(),
+            principal: Principal::email(derived_email),
+            agent: Some(AgentClaims {
+                parent: base_email.to_string(),
+            }),
+            authority: Some(Authority::Closed),
+            registrar: None,
+            status: Some(status),
+        };
+
+        let encoded = Self::encode_and_sign(&claims, base_key)?;
+
+        Ok(Self { encoded, claims })
+    }
+
     /// The status-list reference, if this credential carries one
     pub fn status(&self) -> Option<&StatusRef> {
         self.claims.status.as_ref()
+    }
+
+    /// This certificate's declared authority model (§3.2), if present.
+    pub fn authority(&self) -> Option<Authority> {
+        self.claims.authority
+    }
+
+    /// Whether this is a **self-derived** agent certificate (`typ` ==
+    /// [`TYP_SELF_AGENT_CERT`]).
+    pub fn is_self_agent(&self) -> bool {
+        self.claims.typ.as_deref() == Some(TYP_SELF_AGENT_CERT)
+    }
+
+    /// Whether this certificate is an agent of any kind — a domain-issued agent
+    /// ([`Certificate::is_agent`]) **or** a self-derived agent
+    /// ([`Certificate::is_self_agent`]). This is the predicate that governs
+    /// "requires a warrant" and "cannot be the base/parent of a delegation".
+    pub fn is_any_agent(&self) -> bool {
+        self.is_agent() || self.is_self_agent()
     }
 
     /// Parse a certificate from its encoded form (does not verify signature).
@@ -223,7 +348,8 @@ impl Certificate {
         match (claims.typ.as_deref(), claims.agent.is_some()) {
             (None, false) => {}
             (Some(TYP_AGENT_CERT), true) => {}
-            (Some(TYP_AGENT_CERT), false) => {
+            (Some(TYP_SELF_AGENT_CERT), true) => {}
+            (Some(TYP_AGENT_CERT | TYP_SELF_AGENT_CERT), false) => {
                 return Err(Error::InvalidCertificate(
                     "agent certificate missing its agent block".into(),
                 ));
@@ -264,11 +390,18 @@ impl Certificate {
         Self::verify_signature(&self.encoded, issuer_public_key)
     }
 
-    /// Check if the certificate has expired
+    /// Check if the certificate has expired (relative to now).
     pub fn is_expired(&self) -> bool {
+        self.is_expired_at(Utc::now())
+    }
+
+    /// Check if the certificate has expired relative to an explicit `now`.
+    /// Used by the self-derivation verifier, which takes `now` as a parameter
+    /// so it can be exercised deterministically and shared across verifiers.
+    pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
         let exp = DateTime::from_timestamp(self.claims.exp, 0)
             .unwrap_or(DateTime::UNIX_EPOCH);
-        Utc::now() > exp
+        now > exp
     }
 
     /// Get the certificate claims
@@ -345,6 +478,159 @@ impl Certificate {
 
         public_key.verify(message.as_bytes(), &signature)
     }
+}
+
+/// Split an email into `(local-part, domain)`. Rejects empty parts and any
+/// address that is not exactly one `@`-separated pair.
+pub fn split_email(email: &str) -> Option<(&str, &str)> {
+    let (local, domain) = email.split_once('@')?;
+    if local.is_empty() || domain.is_empty() || domain.contains('@') {
+        return None;
+    }
+    Some((local, domain))
+}
+
+/// Parse a `<base-local>+<label>@<domain>` subaddress (RFC 5233), returning
+/// `(base_local, label, domain)`. The label is everything after the **first**
+/// `+` in the local part and must be non-empty. Returns `None` if there is no
+/// `+` in the local part (i.e. it is a bare address, not a subaddress).
+pub fn parse_subaddress(email: &str) -> Option<(String, String, String)> {
+    let (local, domain) = split_email(email)?;
+    let (base_local, label) = local.split_once('+')?;
+    if base_local.is_empty() || label.is_empty() {
+        return None;
+    }
+    Some((base_local.to_string(), label.to_string(), domain.to_string()))
+}
+
+/// The self-derivation **name constraint** (design §2.1). A derived principal is
+/// permitted iff it shares the base's domain and its local part is either
+/// exactly the base local part (agent-as-self / case 1) or
+/// `base-local + "+" + <non-empty label>` (subaddress / phase-2 cases).
+pub fn derived_name_matches(base_email: &str, derived_email: &str) -> bool {
+    let (base_local, base_domain) = match split_email(base_email) {
+        Some(x) => x,
+        None => return false,
+    };
+    let (derived_local, derived_domain) = match split_email(derived_email) {
+        Some(x) => x,
+        None => return false,
+    };
+    if base_domain != derived_domain {
+        return false;
+    }
+    if derived_local == base_local {
+        return true;
+    }
+    // Subaddress form: exactly `base_local` then `+` then a non-empty label.
+    match derived_local.strip_prefix(base_local).and_then(|r| r.strip_prefix('+')) {
+        Some(label) => !label.is_empty(),
+        None => false,
+    }
+}
+
+/// The **shared** self-derivation chain verifier (design §2.3, decision F) — the
+/// single source of truth that both [`crate::BackedAssertion::verify`] and
+/// sbo-core call, so the constrained trust path can never drift between them.
+///
+/// Given a fresh domain-signed `base` cert, an identity-signed `derived` agent
+/// cert, the DNSSEC `domain_key`, and the current time `now`, this runs the
+/// ordered checklist and returns `Ok(())` iff **all** pass:
+///
+/// - (a) `base` is domain-signed and **fresh**: `base.iss` equals the base
+///   principal's domain, `base` verifies under `domain_key`, and `base` is not
+///   expired at `now` (a **hard** expiry check — the freshness / chain-revocation
+///   lever, OQ-3);
+/// - (b) `derived` is signed by the **base key** (`derived.verify(base pubkey)`);
+/// - (c) name constraint: `derived` principal is the base local part or a
+///   `base+label` subaddress in the **same** domain; `derived.iss` equals the
+///   base identity's email; `derived.typ` is [`TYP_SELF_AGENT_CERT`];
+/// - (d) `derived.agent.parent` equals the base identity's email;
+/// - (e) `derived.authority` is [`Authority::Closed`].
+///
+/// It deliberately does **not** check the warrant, audience, or assertion — the
+/// caller composes those (see [`crate::BackedAssertion::verify`]).
+pub fn verify_self_derived_chain(
+    base: &Certificate,
+    derived: &Certificate,
+    domain_key: &PublicKey,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let base_email = base
+        .email()
+        .ok_or_else(|| Error::InvalidCertificate("base cert has no email principal".into()))?;
+    let base_domain = base
+        .claims()
+        .principal
+        .domain()
+        .ok_or_else(|| Error::InvalidCertificate("base cert email has no domain".into()))?;
+
+    // (a) base is domain-signed and fresh.
+    if base.is_any_agent() {
+        return Err(Error::InvalidCertificate(
+            "self-derivation base must be a plain identity certificate".into(),
+        ));
+    }
+    if base.issuer() != base_domain {
+        return Err(Error::IssuerMismatch {
+            cert_issuer: base.issuer().to_string(),
+            email_domain: base_domain.to_string(),
+        });
+    }
+    base.verify(domain_key)?;
+    if base.is_expired_at(now) {
+        // Hard expiry (OQ-3): a stale base cert invalidates every derived cert
+        // beneath it — this is phase-1's chain-revocation mechanism.
+        return Err(Error::CertificateExpired);
+    }
+
+    // (b) derived is signed by the base identity key.
+    derived.verify(base.public_key())?;
+
+    // (c) name constraint, self-issuance, and the self-derived typ.
+    if !derived.is_self_agent() {
+        return Err(Error::InvalidCertificate(
+            "derived certificate is not a self-derived agent certificate".into(),
+        ));
+    }
+    let derived_email = derived
+        .email()
+        .ok_or_else(|| Error::InvalidCertificate("derived cert has no email principal".into()))?;
+    if !derived_name_matches(base_email, derived_email) {
+        return Err(Error::InvalidCertificate(format!(
+            "self-derived principal '{derived_email}' violates the name constraint against base '{base_email}'"
+        )));
+    }
+    if derived.issuer() != base_email {
+        return Err(Error::InvalidCertificate(format!(
+            "self-derived iss '{}' is not the base identity '{base_email}' (decision D)",
+            derived.issuer()
+        )));
+    }
+
+    // (d) the agent acts for the base identity.
+    match derived.agent_parent() {
+        Some(parent) if parent == base_email => {}
+        Some(parent) => {
+            return Err(Error::InvalidCertificate(format!(
+                "self-derived agent parent '{parent}' is not the base identity '{base_email}'"
+            )));
+        }
+        None => {
+            return Err(Error::InvalidCertificate(
+                "self-derived agent certificate has no agent block".into(),
+            ));
+        }
+    }
+
+    // (e) authority must be explicitly closed.
+    if derived.authority() != Some(Authority::Closed) {
+        return Err(Error::InvalidCertificate(
+            "self-derived agent certificate must declare authority=closed".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

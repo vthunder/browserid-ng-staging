@@ -297,6 +297,35 @@ This "treat the base key as rotating, re-issue on refresh" design is correct
 today **and** future-proof: if primary keys ever became stable, the same design
 still works (it would merely permit, not require, longer-lived derived certs).
 
+#### 5.1.1 Same-key re-stamping — phase-2 UX upgrade (bean `browserid-ng-s5xa`)
+
+The ~24h re-issue churn above is a UX pain, and it is **fixable**: same-key
+re-stamping is feasible and recommended as a **phase-2** enhancement (the phase-1
+design stays as-is — bounded, re-issue-on-refresh).
+
+- **The per-refresh key rotation is VESTIGIAL**, not a deliberate security
+  choice. No forward-secrecy or any rotation rationale exists in the code or
+  history — it is a classic-Persona carryover. The only documented key rationale
+  is **non-extractable custody** (`e2fi`), which is about *storage*, not
+  *rotation*.
+- **Correction to the OQ-3 framing above:** "keys rotate" is only a browser-**dialog**
+  convention, **not a system invariant**. The Rust `browserid-agent` **already**
+  keeps a stable key and re-mints (`browserid-agent/src/lib.rs:498-511`), and
+  **nothing in the codebase keys on key fingerprint** — status is
+  per-identity-*email*, replay is `aud`+`exp` bounded, and the cert cache is keyed
+  per `(issuer, email)`. A stable key is therefore already safe and already used
+  on one path.
+- **The fix is client-only** (no broker change): in `dialog.js`, reuse-if-present
+  in `generateCertificate`, and present the stored pubkey in the primary
+  `genKeyPair` path instead of always generating fresh. The broker certifies
+  whatever pubkey it is given; it works for classic primaries too (keygen is
+  client-side).
+- **Safe** given non-extractable custody (`e2fi`).
+- **Rollout:** phase-2, opt-in/scoped first, then graduate to global. With a
+  stable base key, a derived agent cert survives base-cert refreshes and can be
+  long-lived (only a fresh base cert need be embedded at presentation) — which
+  makes long-running self-derived agents pleasant without re-auth churn.
+
 ---
 
 ## 6. Revocation
