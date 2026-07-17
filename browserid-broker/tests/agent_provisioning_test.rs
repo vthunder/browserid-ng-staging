@@ -223,8 +223,8 @@ async fn delegation_mint_assert_verify_roundtrip() {
     let verified = BackedAssertion::new_agent(cert, warrant, assertion)
         .verify(AUDIENCE, |_| Ok(broker_pub.clone()))
         .unwrap();
-    assert_eq!(verified.email, "attestor@localhost:3000");
-    let attribution = verified.agent.expect("agent attribution");
+    assert_eq!(verified.email(), "attestor@localhost:3000");
+    let attribution = verified.agent().expect("agent attribution");
     assert_eq!(attribution.parent, "human@localhost:3000");
     assert_eq!(attribution.scopes, vec!["post"]);
 
@@ -414,7 +414,7 @@ async fn remint_rotated_agent_key() {
     let verified = BackedAssertion::new_agent(cert, warrant, assertion)
         .verify(AUDIENCE, |_| Ok(broker_pub.clone()))
         .unwrap();
-    assert_eq!(verified.email, "bot@localhost:3000");
+    assert_eq!(verified.email(), "bot@localhost:3000");
 }
 
 /// Revocation of an identity sticks: re-mint fails, and the name isn't revived.

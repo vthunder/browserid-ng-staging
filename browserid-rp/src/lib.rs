@@ -256,9 +256,9 @@ impl Verifier {
         }
 
         Ok(VerifiedIdentity {
-            email: verified.email,
+            email: verified.email().to_string(),
             issuer,
-            agent: verified.agent,
+            agent: verified.agent().cloned(),
         })
     }
 
@@ -396,6 +396,7 @@ pub fn exchange(
     }
     let identity = verifier.verify(&request.assertion)?;
     let granted = identity.agent.map(|a| AgentAttribution {
+        acts_as: a.acts_as,
         parent: a.parent,
         scopes: grant_scopes(&a.scopes, verifier.scopes()),
     });

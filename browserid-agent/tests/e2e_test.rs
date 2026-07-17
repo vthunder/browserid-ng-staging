@@ -58,8 +58,8 @@ async fn sdk_provision_assert_verify_persist_revoke() {
         .unwrap()
         .verify(AUDIENCE, |_| Ok(broker_pubkey.clone()))
         .unwrap();
-    assert_eq!(verified.email, agent.email());
-    let attribution = verified.agent.expect("agent attribution");
+    assert_eq!(verified.email(), agent.email());
+    let attribution = verified.agent().expect("agent attribution");
     assert_eq!(attribution.parent, human);
     assert_eq!(attribution.scopes, vec!["post"]);
 
