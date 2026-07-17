@@ -54,6 +54,11 @@ fn agent_pubkey_json(pk: &browserid_core::PublicKey) -> PublicKeyJson {
 // (for @<broker-domain> agent identities — fallback-rooted parents)
 // ===========================================================================
 
+/// SPIKE-A: reserved mint `name` that selects the human LOGIN mode (plain user
+/// cert for the delegator's own identity) rather than agent minting. `@` is not
+/// a legal agent-handle char, so it can never collide with a real handle.
+pub const LOGIN_SELF: &str = "@self";
+
 #[derive(Serialize)]
 pub struct SuccessResponse {
     pub success: bool,
@@ -140,6 +145,37 @@ where
         .agent_key
         .as_ref()
         .ok_or_else(|| BrokerError::InvalidProvisioningRequest("mint requires an agent-key".into()))?;
+
+    // SPIKE-A (DIRECTION A): the `@self` marker turns this same endpoint into
+    // the human LOGIN path. Instead of an agent identity, we issue a plain user
+    // cert binding the browser's key to the delegator's OWN verified email — the
+    // authority is the delegation over the user's own identity (U_cert~P_cert),
+    // established once in the interactive popup bootstrap. Structurally this
+    // forces every IdP that does login to also serve /provision/mint.
+    if name == LOGIN_SELF {
+        if !verified.constraint.authorizes(LOGIN_SELF) {
+            return Err(BrokerError::PolicyRefused(
+                "credential is not login-capable (@self not in constraint)".into(),
+            ));
+        }
+        // The delegator's own Email record — issue_certificate re-checks it is
+        // verified and within the re-verification window (plain user cert path).
+        let record = state
+            .user_store
+            .get_email(&verified.delegator)?
+            .ok_or(BrokerError::EmailNotFound)?;
+        let ephemeral = verified.request.ephemeral.unwrap_or(false);
+        let cert = issue_certificate(
+            &state.domain,
+            &state.keypair,
+            state.user_store.as_ref(),
+            &record,
+            &agent_pubkey_json(agent_pub),
+            ephemeral,
+        )?;
+        tracing::info!(email = %record.email, "minted LOGIN cert via mint endpoint (@self)");
+        return Ok(Json(MintResponse { success: true, email: record.email, cert }));
+    }
 
     let record = ensure_agent_identity(&state, &verified, name)?;
     let ephemeral = verified.request.ephemeral.unwrap_or(false);
