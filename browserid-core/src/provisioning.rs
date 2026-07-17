@@ -263,6 +263,13 @@ pub enum Action {
     /// v0.4). Carries `name` plus `warrant-aud`/`warrant-scopes`; the user
     /// approves (and signs the warrant) at the registrar's consent surface.
     Warrant,
+    /// SPIKE-B (throwaway): mint a plain **login (user) cert** for the
+    /// delegator's OWN identity, bound to the browser's stable `agent-key`.
+    /// Carries no `name` — the subject is the U_cert principal, not a derived
+    /// agent handle. This is the "browser is the first agent" mechanic: the
+    /// same `/provision/mint` endpoint issues a user-cert (Login) or an
+    /// agent-cert (Mint) purely by this parameter.
+    Login,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -354,6 +361,22 @@ impl ProvisioningRequest {
     ) -> Result<Self> {
         let mut claims = Self::base_claims(Action::Mint, domain);
         claims.name = Some(name.to_string());
+        claims.agent_key = Some(agent_pub.clone());
+        claims.ephemeral = if ephemeral { Some(true) } else { None };
+        Self::create(claims, provisioning_key)
+    }
+
+    /// SPIKE-B: a **login** request — mint a plain user cert for the
+    /// delegator's own identity, bound to `agent_pub` (the browser's stable
+    /// key). No `name`: the subject is the U_cert principal. Same short-lived,
+    /// P_priv-signed, endorsed-and-presented shape as every other request.
+    pub fn login(
+        domain: &str,
+        agent_pub: &PublicKey,
+        ephemeral: bool,
+        provisioning_key: &KeyPair,
+    ) -> Result<Self> {
+        let mut claims = Self::base_claims(Action::Login, domain);
         claims.agent_key = Some(agent_pub.clone());
         claims.ephemeral = if ephemeral { Some(true) } else { None };
         Self::create(claims, provisioning_key)
