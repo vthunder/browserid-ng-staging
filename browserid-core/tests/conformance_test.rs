@@ -746,7 +746,7 @@ mod test_vectors {
         });
 
         assert!(result.is_ok(), "roundtrip verification should succeed");
-        assert_eq!(result.unwrap().email, "user@example.com");
+        assert_eq!(result.unwrap().email(), "user@example.com");
     }
 
     /// Test: We can serialize and deserialize domain public keys
@@ -799,6 +799,6 @@ mod test_vectors {
             loaded_assertion.verify("https://rp.example.com", |_| Ok(loaded_domain_key.clone()));
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().email, "stored@example.com");
+        assert_eq!(result.unwrap().email(), "stored@example.com");
     }
 }

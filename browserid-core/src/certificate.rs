@@ -777,6 +777,291 @@ mod tests {
         assert!(e.contains("without the agent typ"), "{e}");
     }
 
+    // ---- self-derivation (design §2, phase-1 agent-as-self) ----
+
+    const SD_DOMAIN: &str = "sandmill.org";
+    const SD_BASE: &str = "danmills@sandmill.org";
+
+    fn sd_status() -> StatusRef {
+        StatusRef {
+            uri: "https://browserid.me/.well-known/browserid-status".into(),
+            idx: 42,
+        }
+    }
+
+    // Re-encode a certificate's claims after `mutate` and re-sign with `key`,
+    // producing a wire form whose signature is valid under `key` — the tool an
+    // adversary with a leaked base key would use to try to bend the claims.
+    fn remint(cert: &Certificate, key: &KeyPair, mutate: impl Fn(&mut serde_json::Value)) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let header_b64 = URL_SAFE_NO_PAD.encode(r#"{"alg":"EdDSA","typ":"JWT"}"#);
+        let mut claims: serde_json::Value = serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(cert.encoded().split('.').nth(1).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        mutate(&mut claims);
+        let claims_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&claims).unwrap());
+        let msg = format!("{header_b64}.{claims_b64}");
+        let sig = key.sign(msg.as_bytes());
+        format!("{msg}.{}", URL_SAFE_NO_PAD.encode(sig))
+    }
+
+    #[test]
+    fn name_constraint_helper_agent_as_self_and_subaddress() {
+        // Agent-as-self (case 1).
+        assert!(derived_name_matches(SD_BASE, "danmills@sandmill.org"));
+        // +label subaddress (phase-2 general form the constraint already allows).
+        assert!(derived_name_matches(SD_BASE, "danmills+mingo-cli@sandmill.org"));
+        // A different local part is rejected (cannot forge bob).
+        assert!(!derived_name_matches(SD_BASE, "bob@sandmill.org"));
+        // A prefix that is not a real `+`-subaddress is rejected.
+        assert!(!derived_name_matches(SD_BASE, "danmills2@sandmill.org"));
+        // Cross-domain is rejected.
+        assert!(!derived_name_matches(SD_BASE, "danmills@other.org"));
+        // Empty label is rejected.
+        assert!(!derived_name_matches(SD_BASE, "danmills+@sandmill.org"));
+    }
+
+    #[test]
+    fn parse_subaddress_splits_on_first_plus() {
+        assert_eq!(
+            parse_subaddress("danmills+mingo+x@sandmill.org"),
+            Some(("danmills".into(), "mingo+x".into(), "sandmill.org".into()))
+        );
+        assert_eq!(parse_subaddress("danmills@sandmill.org"), None);
+        assert_eq!(parse_subaddress("danmills+@sandmill.org"), None);
+    }
+
+    fn sd_base(domain_key: &KeyPair, base_key: &KeyPair, validity: Duration) -> Certificate {
+        Certificate::create(SD_DOMAIN, SD_BASE, &base_key.public_key(), validity, domain_key)
+            .unwrap()
+    }
+
+    #[test]
+    fn create_self_derived_agent_shape() {
+        let domain_key = KeyPair::generate();
+        let base_key = KeyPair::generate();
+        let agent_key = KeyPair::generate();
+        let base = sd_base(&domain_key, &base_key, Duration::hours(24));
+        let d = Certificate::create_self_derived_agent(
+            &base,
+            &agent_key.public_key(),
+            &base_key,
+            Duration::hours(8),
+            sd_status(),
+        )
+        .unwrap();
+
+        assert!(d.is_self_agent());
+        assert!(d.is_any_agent());
+        assert!(!d.is_agent(), "self-agent is a distinct typ from the domain agent");
+        assert_eq!(d.email(), Some(SD_BASE));
+        assert_eq!(d.issuer(), SD_BASE, "decision D: self-issued by the base identity");
+        assert_eq!(d.agent_parent(), Some(SD_BASE));
+        assert_eq!(d.authority(), Some(Authority::Closed));
+        assert!(d.status().is_some());
+        // Signed by the base key, not the domain key.
+        d.verify(&base_key.public_key()).unwrap();
+        assert!(d.verify(&domain_key.public_key()).is_err());
+        // Re-parse preserves the self-agent typ (fail-closed matcher accepts it).
+        assert!(Certificate::parse(d.encoded()).unwrap().is_self_agent());
+    }
+
+    #[test]
+    fn create_self_derived_agent_binds_validity_to_base() {
+        // Requested 8h but the base only has 1h left → derived exp clamps to base.
+        let domain_key = KeyPair::generate();
+        let base_key = KeyPair::generate();
+        let agent_key = KeyPair::generate();
+        let base = sd_base(&domain_key, &base_key, Duration::hours(1));
+        let d = Certificate::create_self_derived_agent(
+            &base,
+            &agent_key.public_key(),
+            &base_key,
+            Duration::hours(8),
+            sd_status(),
+        )
+        .unwrap();
+        assert_eq!(d.claims().exp, base.claims().exp, "OQ-3: derived exp <= base exp");
+    }
+
+    #[test]
+    fn create_self_derived_agent_rejects_agent_base() {
+        // An agent cert cannot be a self-derivation base.
+        let domain_key = KeyPair::generate();
+        let agent_key = KeyPair::generate();
+        let agent_base = Certificate::create_agent(
+            SD_DOMAIN,
+            "svc@sandmill.org",
+            SD_BASE,
+            &agent_key.public_key(),
+            Duration::hours(24),
+            &domain_key,
+            None,
+        )
+        .unwrap();
+        let k = KeyPair::generate();
+        assert!(Certificate::create_self_derived_agent(
+            &agent_base,
+            &k.public_key(),
+            &k,
+            Duration::hours(8),
+            sd_status(),
+        )
+        .is_err());
+    }
+
+    // ---- the shared verifier fn, exercised directly ----
+
+    struct SdChain {
+        domain_key: KeyPair,
+        base_key: KeyPair,
+        base: Certificate,
+        derived: Certificate,
+    }
+
+    fn sd_chain() -> SdChain {
+        let domain_key = KeyPair::generate();
+        let base_key = KeyPair::generate();
+        let agent_key = KeyPair::generate();
+        let base = sd_base(&domain_key, &base_key, Duration::hours(24));
+        let derived = Certificate::create_self_derived_agent(
+            &base,
+            &agent_key.public_key(),
+            &base_key,
+            Duration::hours(8),
+            sd_status(),
+        )
+        .unwrap();
+        SdChain { domain_key, base_key, base, derived }
+    }
+
+    #[test]
+    fn verify_self_derived_chain_positive() {
+        let c = sd_chain();
+        verify_self_derived_chain(&c.base, &c.derived, &c.domain_key.public_key(), Utc::now())
+            .unwrap();
+    }
+
+    #[test]
+    fn verify_self_derived_chain_hard_base_expiry() {
+        // Even a still-valid derived cert is rejected once the base is stale at
+        // `now` — the OQ-3 chain-revocation lever.
+        let c = sd_chain();
+        let future = Utc::now() + Duration::hours(48);
+        let e = verify_self_derived_chain(
+            &c.base,
+            &c.derived,
+            &c.domain_key.public_key(),
+            future,
+        )
+        .unwrap_err();
+        assert!(matches!(e, Error::CertificateExpired), "{e:?}");
+    }
+
+    #[test]
+    fn verify_self_derived_chain_base_not_domain_signed() {
+        let c = sd_chain();
+        let rogue = KeyPair::generate();
+        let e = verify_self_derived_chain(&c.base, &c.derived, &rogue.public_key(), Utc::now())
+            .unwrap_err();
+        assert!(matches!(e, Error::SignatureVerificationFailed), "{e:?}");
+    }
+
+    #[test]
+    fn verify_self_derived_chain_derived_not_signed_by_base_key() {
+        // Derived cert signed by some other key than the base identity's.
+        let c = sd_chain();
+        let rogue = KeyPair::generate();
+        let agent_key = KeyPair::generate();
+        let forged = Certificate::create_self_derived_agent(
+            &c.base,
+            &agent_key.public_key(),
+            &rogue, // not the base key
+            Duration::hours(8),
+            sd_status(),
+        )
+        .unwrap();
+        let e = verify_self_derived_chain(&c.base, &forged, &c.domain_key.public_key(), Utc::now())
+            .unwrap_err();
+        assert!(matches!(e, Error::SignatureVerificationFailed), "{e:?}");
+    }
+
+    #[test]
+    fn verify_self_derived_chain_forge_other_principal_rejected() {
+        // Re-sign the derived cert with the base key but bend the principal to a
+        // different local part → the name constraint rejects it (cannot forge bob).
+        let c = sd_chain();
+        let bob = remint(&c.derived, &c.base_key, |cl| {
+            cl["principal"]["email"] = "bob@sandmill.org".into()
+        });
+        let forged = Certificate::parse(&bob).unwrap();
+        let e = verify_self_derived_chain(&c.base, &forged, &c.domain_key.public_key(), Utc::now())
+            .unwrap_err();
+        assert!(e.to_string().contains("name constraint"), "{e}");
+    }
+
+    #[test]
+    fn verify_self_derived_chain_forge_cross_domain_rejected() {
+        let c = sd_chain();
+        let other = remint(&c.derived, &c.base_key, |cl| {
+            cl["principal"]["email"] = "danmills@other.org".into()
+        });
+        let forged = Certificate::parse(&other).unwrap();
+        let e = verify_self_derived_chain(&c.base, &forged, &c.domain_key.public_key(), Utc::now())
+            .unwrap_err();
+        assert!(e.to_string().contains("name constraint"), "{e}");
+    }
+
+    #[test]
+    fn verify_self_derived_chain_authority_must_be_closed() {
+        let c = sd_chain();
+        // authority = open (trying to claim full identity authority).
+        let open = remint(&c.derived, &c.base_key, |cl| cl["authority"] = "open".into());
+        let forged = Certificate::parse(&open).unwrap();
+        let e = verify_self_derived_chain(&c.base, &forged, &c.domain_key.public_key(), Utc::now())
+            .unwrap_err();
+        assert!(e.to_string().contains("authority=closed"), "{e}");
+
+        // authority missing entirely.
+        let none = remint(&c.derived, &c.base_key, |cl| {
+            cl.as_object_mut().unwrap().remove("authority");
+        });
+        let forged = Certificate::parse(&none).unwrap();
+        let e = verify_self_derived_chain(&c.base, &forged, &c.domain_key.public_key(), Utc::now())
+            .unwrap_err();
+        assert!(e.to_string().contains("authority=closed"), "{e}");
+    }
+
+    #[test]
+    fn verify_self_derived_chain_wrong_parent_rejected() {
+        // agent.parent points at someone other than the base identity.
+        let c = sd_chain();
+        let bad = remint(&c.derived, &c.base_key, |cl| {
+            cl["agent"]["parent"] = "mallory@sandmill.org".into()
+        });
+        let forged = Certificate::parse(&bad).unwrap();
+        let e = verify_self_derived_chain(&c.base, &forged, &c.domain_key.public_key(), Utc::now())
+            .unwrap_err();
+        assert!(e.to_string().contains("agent parent"), "{e}");
+    }
+
+    #[test]
+    fn future_self_derived_typ_fails_closed() {
+        // Fail-closed property: a verifier that does not recognize a self-derived
+        // typ rejects it at parse. A future `-v2` marker (which today's matcher
+        // lacks an arm for) is rejected exactly as an old verifier would reject
+        // the `-v1` marker if its arm were removed.
+        let c = sd_chain();
+        let v2 = remint(&c.derived, &c.base_key, |cl| {
+            cl["typ"] = "browserid-self-agent-cert-v2".into()
+        });
+        let e = Certificate::parse(&v2).unwrap_err().to_string();
+        assert!(e.contains("unrecognized certificate typ"), "{e}");
+    }
+
     #[test]
     fn test_certificate_wrong_key_rejected() {
         let domain_key = KeyPair::generate();

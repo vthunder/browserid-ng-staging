@@ -128,7 +128,7 @@ mod basic_verification {
         });
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().email, TEST_EMAIL);
+        assert_eq!(result.unwrap().email(), TEST_EMAIL);
     }
 
     /// Test: specifying the wrong audience fails with nice error
@@ -194,8 +194,8 @@ mod basic_verification {
             .verify(TEST_ORIGIN, |_| Ok(domain_key.public_key()))
             .unwrap();
 
-        assert_eq!(verified.email, TEST_EMAIL);
-        assert!(verified.agent.is_none());
+        assert_eq!(verified.email(), TEST_EMAIL);
+        assert!(!verified.is_agent());
     }
 }
 
@@ -406,7 +406,7 @@ mod issuer_authority {
         });
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().email, "alice@example.com");
+        assert_eq!(result.unwrap().email(), "alice@example.com");
     }
 }
 
@@ -565,7 +565,7 @@ mod backed_assertion_encoding {
         // Should still verify correctly
         let result = parsed.verify(TEST_ORIGIN, |_| Ok(domain_key.public_key()));
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().email, TEST_EMAIL);
+        assert_eq!(result.unwrap().email(), TEST_EMAIL);
     }
 }
 

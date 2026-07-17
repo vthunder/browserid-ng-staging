@@ -232,6 +232,24 @@ impl BackedAssertion {
         }
     }
 
+    /// Create a self-derived agent presentation:
+    /// `[base_cert, agent_cert]~warrant~assertion` (self-derivation design
+    /// §2.2). The `agent_cert` is the self-derived leaf (typ
+    /// [`crate::certificate::TYP_SELF_AGENT_CERT`]) and `base_cert` is the fresh
+    /// domain-signed base it chains to.
+    pub fn new_self_derived_agent(
+        base_cert: Certificate,
+        agent_cert: Certificate,
+        warrant: Warrant,
+        assertion: Assertion,
+    ) -> Self {
+        Self {
+            certificates: vec![base_cert, agent_cert],
+            warrant: Some(warrant),
+            assertion,
+        }
+    }
+
     /// Create a backed assertion with a certificate chain
     pub fn with_chain(certificates: Vec<Certificate>, assertion: Assertion) -> Self {
         Self {
