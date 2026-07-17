@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::Json;
+use tower_cookies::Cookies;
 use browserid_core::provisioning::{Action, Endorsement, RequestBundle, VerifiedRequest};
 use browserid_registrar::valid_agent_name;
 use chrono::{DateTime, Utc};
@@ -63,6 +64,37 @@ pub struct SuccessResponse {
 pub struct ProvisionRequest {
     pub request_bundle: String,
     pub endorsement: String,
+}
+
+// === SPIKE C: /provision/mint as the single cert-issuance front door ========
+//
+// Direction C makes the human's login mint its cert through the SAME agent
+// endpoint an agent uses. The mint handler now accepts EITHER shape:
+//
+//   * Delegated  { request_bundle, endorsement }  — the agent delegation chain
+//     (headless agents, unchanged).
+//   * Login      { email, pubkey, ephemeral, csrf } — the browser's own login
+//     identity, authorized by the interactive-auth SESSION (the credential the
+//     hidden iframe / password ceremony yields), not by a warrant.
+//
+// So supporting login now STRUCTURALLY requires the mint endpoint to exist and
+// work: `static/dialog.js` no longer POSTs to `/wsapi/cert_key` — it POSTs the
+// Login shape here. cert_key remains only as the shared issuance core.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum MintBody {
+    Delegated {
+        request_bundle: String,
+        endorsement: String,
+    },
+    Login {
+        email: String,
+        pubkey: PublicKeyJson,
+        #[serde(default)]
+        ephemeral: bool,
+        #[serde(default)]
+        csrf: String,
+    },
 }
 
 /// Verify a dual-signed provisioning request as the target IdP: full chain
@@ -117,10 +149,13 @@ pub struct MintResponse {
     pub cert: String,
 }
 
-/// POST /provision/mint
+/// POST /provision/mint — the single cert-issuance front door (SPIKE C).
+/// Dispatches on the body shape: a delegation-chain agent mint, or a
+/// session-authenticated login self-mint.
 pub async fn mint<U, S, E>(
     State(state): State<Arc<AppState<U, S, E>>>,
-    Json(req): Json<ProvisionRequest>,
+    cookies: Cookies,
+    Json(body): Json<MintBody>,
 ) -> Result<Json<MintResponse>, BrokerError>
 where
     U: UserStore,
@@ -128,6 +163,18 @@ where
     E: EmailSender,
 {
     require_enabled(&state)?;
+    let req = match body {
+        MintBody::Delegated { request_bundle, endorsement } => {
+            ProvisionRequest { request_bundle, endorsement }
+        }
+        // Login self-mint: the browser's interactive-auth session IS the
+        // provisioning credential. Same ownership + issuance path as the old
+        // /wsapi/cert_key, but reached through the agent endpoint — so login and
+        // agents share one mint choke point.
+        MintBody::Login { email, pubkey, ephemeral, csrf } => {
+            return mint_login(&state, &cookies, &email, &pubkey, ephemeral, &csrf).await;
+        }
+    };
     let (_bundle, verified) = verify_as_target_idp(&state, &req, Action::Mint)?;
 
     let name = verified
@@ -156,6 +203,47 @@ where
     Ok(Json(MintResponse {
         success: true,
         email: record.email,
+        cert,
+    }))
+}
+
+/// Session-authenticated login self-mint (SPIKE C). Mirrors `cert::cert_key`:
+/// prove the session owns `email`, then issue a plain login cert through the
+/// shared `issue_certificate` core. The difference is only the front door —
+/// this lives on `/provision/mint`, so the login dialog now depends on the
+/// agent mint endpoint being present and working.
+async fn mint_login<U: UserStore, S: SessionStore, E: EmailSender>(
+    state: &AppState<U, S, E>,
+    cookies: &Cookies,
+    email: &str,
+    pubkey: &PublicKeyJson,
+    ephemeral: bool,
+    csrf: &str,
+) -> Result<Json<MintResponse>, BrokerError> {
+    let session =
+        super::session::get_session_from_cookies(cookies, state.session_store.as_ref())
+            .ok_or(BrokerError::NotAuthenticated)?;
+    super::session::require_csrf(&session, csrf)?;
+
+    let normalized_email = email.to_lowercase();
+    let emails = state.user_store.list_emails(session.user_id)?;
+    let email_record = emails
+        .iter()
+        .find(|e| e.email.to_lowercase() == normalized_email)
+        .ok_or(BrokerError::EmailNotFound)?;
+
+    let cert = issue_certificate(
+        &state.domain,
+        &state.keypair,
+        state.user_store.as_ref(),
+        email_record,
+        pubkey,
+        ephemeral,
+    )?;
+    tracing::info!(email = %email_record.email, "minted login identity (self-mint via /provision/mint)");
+    Ok(Json(MintResponse {
+        success: true,
+        email: email_record.email.clone(),
         cert,
     }))
 }
@@ -343,4 +431,42 @@ where
         .set_status_revoked("identity", &record.email.to_lowercase())?;
     tracing::info!(email = %record.email, "revoked agent identity (delegation chain)");
     Ok(Json(SuccessResponse { success: true }))
+}
+
+#[cfg(test)]
+mod spike_c_tests {
+    use super::MintBody;
+
+    // SPIKE C: /provision/mint accepts BOTH the agent delegation-chain body and
+    // the session-authed login self-mint body, dispatched purely by shape.
+    #[test]
+    fn mint_body_dispatches_on_shape() {
+        // Login shape (what dialog.js::generateCertificate now sends).
+        let login = r#"{"email":"petra@example.com","pubkey":{"algorithm":"Ed25519","publicKey":"abc"},"ephemeral":false,"csrf":"tok"}"#;
+        match serde_json::from_str::<MintBody>(login).unwrap() {
+            MintBody::Login { email, pubkey, ephemeral, .. } => {
+                assert_eq!(email, "petra@example.com");
+                assert_eq!(pubkey.algorithm, "Ed25519");
+                assert!(!ephemeral);
+            }
+            _ => panic!("login body misrouted to delegation chain"),
+        }
+
+        // Agent delegation-chain shape (headless agents, unchanged).
+        let delegated = r#"{"request_bundle":"U~P~R","endorsement":"E"}"#;
+        match serde_json::from_str::<MintBody>(delegated).unwrap() {
+            MintBody::Delegated { request_bundle, endorsement } => {
+                assert_eq!(request_bundle, "U~P~R");
+                assert_eq!(endorsement, "E");
+            }
+            _ => panic!("delegation body misrouted to login"),
+        }
+
+        // csrf defaults to empty when omitted (require_csrf then rejects it).
+        let no_csrf = r#"{"email":"a@b.c","pubkey":{"algorithm":"Ed25519","publicKey":"x"}}"#;
+        match serde_json::from_str::<MintBody>(no_csrf).unwrap() {
+            MintBody::Login { csrf, .. } => assert_eq!(csrf, ""),
+            _ => panic!("misrouted"),
+        }
+    }
 }

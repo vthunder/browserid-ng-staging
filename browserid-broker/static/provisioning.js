@@ -70,6 +70,27 @@
         return;
       }
 
+      // SPIKE C — where the cert-issuance step is replaced.
+      //
+      // Today the iframe drives THREE postMessage round-trips: beginProvisioning
+      // (auth handshake), genKeyPair (browser makes a key, hands the IdP page the
+      // pubkey), registerCertificate (IdP page relays back the minted cert).
+      //
+      // Direction C KEEPS beginProvisioning (the interactive auth ceremony) but
+      // DELETES the genKeyPair + registerCertificate hops: once auth succeeds the
+      // broker generates the key itself (_generateKeyPair, already here) and gets
+      // the cert by POSTing the "Login" shape to the IdP's /provision/mint over
+      // HTTP — i.e. `httpMintAfterAuth()` below replaces `case 'genKeyPair'` /
+      // `case 'registerCertificate'`.
+      //
+      // BLOCKER (honest): /provision/mint's login self-mint is SESSION-authed,
+      // and the credentialed fetch to a *third-party* primary IdP is a
+      // cross-site cookie'd request — exactly the ITP surface the iframe already
+      // dies on. So this HTTP-mint replacement is only actually reachable when
+      // the mint target is THIS broker (the fallback/secondary path in
+      // dialog.js::generateCertificate, which this spike wires up for real). For
+      // a genuine third-party primary the mint would need a delegation-chain
+      // bundle instead of a session — see SPIKE-C-REPORT.md.
       switch (data.method) {
         case 'beginProvisioning':
           // Respond with email and duration
@@ -151,6 +172,33 @@
         }),
         publicKeyJwk: publicKeyJwk
       };
+    },
+
+    /**
+     * SPIKE C: mint the login cert over HTTP through the agent endpoint,
+     * replacing the genKeyPair + registerCertificate postMessage hops. Called
+     * once beginProvisioning has established the auth session. `mintOrigin` is
+     * the IdP base (same-origin broker in the demonstrable path). Returns
+     * { certificate, keypair } — the same shape the postMessage flow yielded.
+     */
+    httpMintAfterAuth: async function(mintOrigin, email) {
+      const keypair = await this._generateKeyPair();
+      const resp = await fetch(mintOrigin + '/provision/mint', {
+        method: 'POST',
+        credentials: 'include',            // the auth-ceremony session cookie
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: email,
+          pubkey: JSON.parse(keypair.publicKeyJson),
+          ephemeral: false
+          // csrf omitted here for brevity; dialog.js::apiCall injects it.
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.success) {
+        throw new Error(data.reason || 'mint failed');
+      }
+      return { certificate: data.cert, keypair: keypair };
     },
 
     /**

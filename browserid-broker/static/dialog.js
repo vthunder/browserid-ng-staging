@@ -41,7 +41,11 @@
     completeUserCreation: '/wsapi/complete_user_creation',
     authenticate: '/wsapi/authenticate_user',
     listEmails: '/wsapi/list_emails',
-    certKey: '/wsapi/cert_key',
+    // SPIKE C: login mints its cert through the AGENT endpoint. The dialog no
+    // longer calls /wsapi/cert_key — it POSTs the session-authed "Login" shape
+    // to /provision/mint, the same front door headless agents mint through. So
+    // supporting email login now structurally requires the mint endpoint.
+    certKey: '/provision/mint',
     stageReset: '/wsapi/stage_reset',
     completeReset: '/wsapi/complete_reset',
     logout: '/wsapi/logout',
