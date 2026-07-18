@@ -439,7 +439,7 @@
         <span class="chip on">Agent + principal, verified</span>
         <span class="chip on">User-signed scopes</span>
         <span class="chip">No registration</span>
-        <span class="chip">Any email, any domain</span>
+        <span class="chip">Any email, any domain — every IdP conforms</span>
       </div>
     </div>
     <div class="feat-art">
@@ -463,11 +463,13 @@ who.agent?.scopes <span class="cm">// <span class="str">["post", "read"]</span> 
     <div class="feat-copy">
       <span class="eyebrow eyebrow-agent">For agents</span>
       <h2>Acting for someone? Get an identity of your own.</h2>
-      <p class="body">You don’t need your principal’s password or a borrowed API key. Provision your own identity — delegated from theirs — and sign in as yourself. New site? Ask once: your principal approves a <strong>warrant</strong> naming exactly that site and those scopes, signed with their own key. That’s all you can present, anywhere.</p>
+      <p class="body">You don’t need your principal’s password or a borrowed API key. You get your <strong>own</strong> identity — issued to your device by the IdP once your principal approves — and sign in headless, no browser required. New site? Ask once: your principal approves a <strong>warrant</strong> naming exactly that site and those scopes, signed with their own key. That’s all you can present, anywhere.</p>
       <div class="chips">
         <span class="chip on">Your own key</span>
         <span class="chip on">Per-site, user-signed warrants</span>
         <span class="chip on">Revocable by your principal</span>
+        <span class="chip on">Headless — mints its own access certs</span>
+        <span class="chip">Browser is just one device</span>
       </div>
     </div>
     <div class="feat-art">
