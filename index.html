@@ -13,19 +13,19 @@
      origin has no keystore/cookies/wsapi. Ingestion is reverse-proxied via /ingest. -->
 <script src="/vendor/posthog.js"></script>
 <script src="/analytics.js" defer></script>
-<!-- Theme before first paint: stored choice wins; the design's canonical look is dark. -->
+<!-- Theme before first paint: stored choice wins; the default is light. -->
 <script>
   (function () {
     var t;
     try { t = localStorage.getItem("browserid:theme"); } catch (e) {}
-    document.documentElement.setAttribute("data-theme", t === "light" ? "light" : "dark");
+    document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
   })();
 </script>
 <style>
-  /* Palette: the design's dark theme is canonical; light is a derived mapping
-     of the same hierarchy (ground / panel / two border weights / text / muted /
-     gold / cyan / green), tuned for contrast on paper. */
-  :root, :root[data-theme="dark"] {
+  /* Palette: two themes over one hierarchy (ground / panel / two border
+     weights / text / muted / gold / cyan / green). Light is the default;
+     the design board's dark palette is the toggle. */
+  :root[data-theme="dark"] {
     color-scheme: dark;
     --bg: #080B15;
     --panel: #10162A;
@@ -52,7 +52,7 @@
     --nav-bg: rgba(8, 11, 21, 0.86);
     --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 24px 60px -26px rgba(0, 0, 0, 0.7);
   }
-  :root[data-theme="light"] {
+  :root, :root[data-theme="light"] {
     color-scheme: light;
     --bg: #F7F5F0;
     --panel: #FFFFFF;
