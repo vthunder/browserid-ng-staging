@@ -567,7 +567,7 @@
             <button type="button" data-tab="other">Other</button>
           </div>
           <div style="font-size:12px;color:var(--muted);margin-bottom:6px" id="mcpHint">Run this in your terminal:</div>
-          <pre class="mcp-cmd" id="mcpCmd">claude mcp add browserid -- npx -y @browserid-ng/wallet</pre>
+          <pre class="mcp-cmd" id="mcpCmd">claude mcp add -s user browserid -- npx -y @browserid-ng/wallet</pre>
         </div>
       </div>
     </div>
@@ -848,7 +848,7 @@ who.scopes   <span class="c">// <span class="s">["post"]</span> — what Alice s
   // ---- MCP setup tabs ----
   var mcpJson = '{ "mcpServers": { "browserid": { "command": "npx", "args": ["-y", "@browserid-ng/wallet"] } } }';
   var tabs = {
-    claude: { hint: "Run this in your terminal:", cmd: "claude mcp add browserid -- npx -y @browserid-ng/wallet" },
+    claude: { hint: "Run this in your terminal:", cmd: "claude mcp add -s user browserid -- npx -y @browserid-ng/wallet" },
     codex: { hint: "Run this in your terminal:", cmd: "codex mcp add browserid -- npx -y @browserid-ng/wallet" },
     cursor: { hint: "Add to your MCP settings (mcp.json):", cmd: mcpJson },
     other: { hint: "Any MCP-capable agent — add the server to its config:", cmd: mcpJson }
