@@ -574,8 +574,9 @@ who.scopes   <span class="cm">// <span class="str">["post"]</span> — what Alic
 <pre><span class="cm">// Ask once — the human approves a link; you never hold their password.</span>
 <span class="kw">const</span> pending = <span class="kw">await</span> <span class="fn">requestProvision</span>(broker, {
   grants: [{ audience, scopes: [<span class="str">"post"</span>] }],
-  grantee: <span class="str">"*"</span>,    <span class="cm">// they choose whose name is on your actions</span>
   handle: <span class="str">"researcher"</span>,
+  label: <span class="str">"Research assistant"</span>,  <span class="cm">// they confirm your name</span>
+  message: <span class="str">"I file your weekly digest."</span>,  <span class="cm">// shown to them, unverified</span>
 })
 <span class="fn">show</span>(pending.approveUrl)          <span class="cm">// they click “Approve”</span>
 <span class="kw">const</span> me = <span class="kw">await</span> pending.<span class="fn">wait</span>()  <span class="cm">// your identity + signed warrant</span>
