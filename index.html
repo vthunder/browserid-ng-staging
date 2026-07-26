@@ -196,11 +196,16 @@
   }
   .democard .q { font-size: 19px; line-height: 1.36; margin: 0 0 10px; letter-spacing: -0.01em; text-wrap: balance; }
   .democard .note { font-size: 13.5px; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
-  .democard .fp {
-    border: 1px solid var(--line-strong); border-radius: 10px; padding: 16px;
-    text-align: center; margin-bottom: 16px;
-    font-family: ui-monospace, Menlo, monospace; font-size: 26px; font-weight: 600; letter-spacing: 0.1em;
+  .democard .fields { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
+  .democard .flabel { font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+  .democard .fbox {
+    font-family: ui-monospace, Menlo, monospace; font-size: 14px;
+    border: 1px solid var(--line-strong); border-radius: 8px; padding: 11px 12px;
+    background: var(--well); overflow-wrap: anywhere;
   }
+  .democard .fbox.addr { font-size: 13px; }
+  .democard .fbox.addr .dim { color: var(--muted); }
+  .democard .fbox.addr .tag { color: var(--cyan); }
   .democard .row {
     display: flex; gap: 12px; align-items: baseline; padding: 9px 0; border-top: 1px solid var(--line);
   }
@@ -477,18 +482,21 @@
         <button class="replay" id="demoReplay" type="button">replay</button>
       </div>
 
-      <!-- Step 1: the fingerprint check (Flow I, as it actually ships) -->
+      <!-- Step 1: the naming screen (Flow I, as it actually ships) -->
       <div class="democard" id="dcard1">
         <div class="head"><span class="b"><i></i>browserid</span><span class="who">alice@gmail.com</span></div>
-        <div class="stepmark">Step 1 of 2 · check</div>
-        <p class="q">Is this your agent?</p>
-        <p class="note">Your agent should be showing this code right now, wherever you run it.</p>
-        <div class="fp">3F–9C–2A</div>
-        <div class="btns">
-          <button class="no" id="demoStop" type="button">It doesn't — stop</button>
-          <button class="yes" id="demoMatch" type="button">It matches</button>
+        <div class="stepmark">identity</div>
+        <p class="q">Give your agent a name and an address.</p>
+        <div class="fields">
+          <div><div class="flabel">Name — it suggested this, you decide</div><div class="fbox">Researcher</div></div>
+          <div><div class="flabel">Its address — under your account</div>
+            <div class="fbox addr"><span class="dim">alice+</span><span class="tag">researcher</span><span class="dim">@gmail.com</span></div></div>
         </div>
-        <p class="foot">this creates an identity, not a permission — it can do <b>nothing</b> yet</p>
+        <div class="btns">
+          <button class="no" id="demoStop" type="button">Cancel</button>
+          <button class="yes" id="demoMatch" type="button">Create its identity</button>
+        </div>
+        <p class="foot">an identity, not a permission — it can do <b>nothing</b> yet</p>
       </div>
 
       <!-- Step 2: the permission card (Flow P) -->
@@ -804,9 +812,9 @@ who.scopes   <span class="c">// <span class="s">["post"]</span> — what Alice s
     },
     stopped: {
       title: "NOTHING CREATED",
-      sub: "the codes didn’t match — you weren’t talking to your agent",
+      sub: "you cancelled — no identity exists",
       mark: "✕", gold: false,
-      note: "no identity exists; nothing can act under your account"
+      note: "nothing can act under your account"
     }
   };
   function demoShow(step, outcome) {
