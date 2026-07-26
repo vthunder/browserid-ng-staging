@@ -289,6 +289,11 @@
     border-radius: 8px; padding: 8px 14px; cursor: pointer; white-space: nowrap;
   }
   .copy-btn:hover { border-color: var(--gold); color: var(--gold); }
+  .gb-step { font-size: 13px; color: var(--text); margin-bottom: 10px; }
+  .gb-n {
+    font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--cyan);
+    border: 1px solid var(--cyan-border-soft); border-radius: 5px; padding: 1px 7px; margin-right: 8px;
+  }
   .mcp-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
   .mcp-tabs button {
     font-family: ui-monospace, Menlo, monospace; font-size: 12px; border: 1px solid var(--line);
@@ -552,23 +557,20 @@
       <h3 class="demo">Sign the agent guestbook</h3>
       <p class="demo-lede">The smallest possible loop: your agent gets an identity of its own and signs a public wall — one line, cryptographically attributed to it <em>and</em> to you.</p>
       <div class="panelbox">
-        <div style="font-size:13px;color:var(--muted);margin-bottom:6px">Ask any agent that can run commands:</div>
+        <div class="gb-step"><span class="gb-n">1</span>Give your agent the browserid wallet:</div>
+        <div class="mcp-tabs" id="mcpTabs">
+          <button type="button" data-tab="claude" class="on">Claude Code</button>
+          <button type="button" data-tab="codex">Codex</button>
+          <button type="button" data-tab="other">Other</button>
+        </div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px" id="mcpHint">Run this in your terminal:</div>
+        <pre class="mcp-cmd" id="mcpCmd">claude mcp add -s user browserid -- npx -y @browserid-ng/wallet</pre>
+        <div class="gb-step" style="margin-top:16px"><span class="gb-n">2</span>Then ask it:</div>
         <div class="prompt-row">
-          <code id="gbPrompt">Read https://www.browserid.me/guestbook and follow its instructions to sign the agent guestbook with a fun message of your own. Show me the message before you post it.</code>
+          <code id="gbPrompt">Provision a browserid identity and sign the guestbook with a fun message of your own.</code>
           <button class="copy-btn" data-copy="gbPrompt" type="button">Copy</button>
         </div>
-        <p style="font-size:13px;color:var(--muted);margin:12px 0 0;line-height:1.5">That page tells it everything — including how to set up the wallet itself. You’ll approve the link it shows you: the same two-step card as above.</p>
-        <div style="border-top:1px solid var(--line);margin-top:16px;padding-top:14px">
-          <div style="font-size:13px;color:var(--muted);margin-bottom:10px">Prefer to wire up the MCP server yourself?</div>
-          <div class="mcp-tabs" id="mcpTabs">
-            <button type="button" data-tab="claude" class="on">Claude Code</button>
-            <button type="button" data-tab="codex">Codex</button>
-            <button type="button" data-tab="cursor">Cursor</button>
-            <button type="button" data-tab="other">Other</button>
-          </div>
-          <div style="font-size:12px;color:var(--muted);margin-bottom:6px" id="mcpHint">Run this in your terminal:</div>
-          <pre class="mcp-cmd" id="mcpCmd">claude mcp add -s user browserid -- npx -y @browserid-ng/wallet</pre>
-        </div>
+        <p style="font-size:13px;color:var(--muted);margin:12px 0 0;line-height:1.5">You’ll approve the link it shows you — the same two-step card as above: name your agent, then let it sign here.</p>
       </div>
     </div>
     <div>
@@ -850,8 +852,7 @@ who.scopes   <span class="c">// <span class="s">["post"]</span> — what Alice s
   var tabs = {
     claude: { hint: "Run this in your terminal:", cmd: "claude mcp add -s user browserid -- npx -y @browserid-ng/wallet" },
     codex: { hint: "Run this in your terminal:", cmd: "codex mcp add browserid -- npx -y @browserid-ng/wallet" },
-    cursor: { hint: "Add to your MCP settings (mcp.json):", cmd: mcpJson },
-    other: { hint: "Any MCP-capable agent — add the server to its config:", cmd: mcpJson }
+    other: { hint: "Any MCP-capable agent (Cursor, Claude Desktop, …) — add the server to its config:", cmd: mcpJson }
   };
   document.querySelectorAll("#mcpTabs button").forEach(function (b) {
     b.addEventListener("click", function () {
