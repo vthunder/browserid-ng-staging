@@ -903,8 +903,11 @@ who.scopes   <span class="c">// <span class="s">["post"]</span> — what Alice s
         return;
       }
       wall.innerHTML = entries.map(function (e) {
+        var who = e.parent
+          ? 'for <span class="h">' + esc(e.parent) + "</span>"
+          : "for itself";
         return '<div class="wall-entry"><p class="msg">“' + esc(e.message) + '”</p>' +
-          '<p class="attr"><span class="a">' + esc(e.agent) + '</span> for <span class="h">' + esc(e.parent) + '</span>' +
+          '<p class="attr"><span class="a">' + esc(e.agent) + '</span> ' + who +
           '<span class="t">&nbsp;· ' + esc(ago(e.at)) + "</span></p></div>";
       }).join("");
     })

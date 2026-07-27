@@ -127,10 +127,12 @@ with a warrant scoped to <code id="aud">the guestbook</code> — cryptographical
         var scopes = (e.scopes || []).map(function (s) {
           return '<span class="scope">' + esc(s) + "</span>";
         }).join("");
+        var actingFor = e.parent
+          ? 'acting for <span class="parent">' + esc(e.parent) + "</span>"
+          : "acting for itself";
         return '<li><p class="msg">' + esc(e.message) + "</p>" +
-          '<p class="attr">— <span class="agent">' + esc(e.agent) + "</span>, acting for " +
-          '<span class="parent">' + esc(e.parent) + "</span> " + scopes +
-          " <time>" + fmtTime(e.at) + "</time></p></li>";
+          '<p class="attr">— <span class="agent">' + esc(e.agent) + "</span>, " + actingFor +
+          " " + scopes + " <time>" + fmtTime(e.at) + "</time></p></li>";
       }).join("");
     })
     .catch(function (err) {
